@@ -8,6 +8,7 @@ set -euo pipefail
 MAX_JOBS=6
 NUM_RUNS=3
 SAVE_LOGS=1
+TIMEOUT_SECONDS=600
 OUTPUT_ROOT="experiments"
 SESSION_ID="$(date +%Y%m%d_%H%M%S)"
 SESSION_DIR=""
@@ -16,7 +17,7 @@ MANIFEST_FILE=""
 
 usage() {
   cat <<'EOF'
-Usage: ./run_experiments.sh [options]
+Usage: ./experimental_run.sh [options]
 
 Options:
   --runs N         Number of runs per configuration (default: 3)
@@ -26,6 +27,7 @@ Options:
   --no-logs        Do not keep raw logs, only metrics
   --envs LIST      Comma-separated list of environments to run
   --help           Show this help message
+  --timeout N      Maximum time per experiment in seconds (default: 600)
 EOF
 }
 
@@ -177,8 +179,13 @@ run_experiment() {
   echo "[START] run=${run_id} ${algo} | reward=${reward} | exploration=${expl} | env=${env}"
 
   set +e
-  stdbuf -oL -eL mvn -q exec:java -Dexec.args="$algo $reward $expl $env" > "$raw_output_file" 2>&1
+  timeout --signal=SIGTERM --kill-after=30s "${TIMEOUT_SECONDS}s" \
+  stdbuf -oL -eL mvn -q exec:java -Dexec.args="$algo $reward $expl $env" \
+  > "$raw_output_file" 2>&1
   exit_code=$?
+  if [[ "$exit_code" -eq 124 ]]; then
+    status="TIMEOUT"
+  fi
   set -e
 
   if [[ "$SAVE_LOGS" -eq 1 ]]; then
@@ -197,7 +204,7 @@ run_experiment() {
     iterations="$(grep "^Horizon step:" "$raw_output_file" | tail -n 1 | awk '{print $3}')"
   fi
 
-  if [[ "$exit_code" -ne 0 ]]; then
+  if [[ "$exit_code" -ne 0 && "$exit_code" -ne 124 ]]; then
     status="FAILED"
   fi
 
@@ -237,6 +244,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --envs)
       IFS=',' read -r -a ENVIRONMENTS <<< "$2"
+      shift 2
+      ;;
+    --timeout)
+      TIMEOUT_SECONDS="$2"
       shift 2
       ;;
     --help)
@@ -281,6 +292,7 @@ echo "algorithm,reward,exploration,environment,run,states,t_explore_sec,t_learn_
   echo "save_logs=${SAVE_LOGS}"
   echo "environments=${ENVIRONMENTS[*]}"
   echo "started_at=$(date -Iseconds)"
+  echo "timeout_seconds=${TIMEOUT_SECONDS}"
 } > "$MANIFEST_FILE"
 
 echo "Compilation préalable du projet..."
